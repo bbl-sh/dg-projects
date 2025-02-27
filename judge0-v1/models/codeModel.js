@@ -15,21 +15,100 @@ const execPromise = (command) => {
     });
 };
 
-export const executeCode = async (code) => {
-    const uniqueId = randomUUID(); // Generate unique ID for temp file
-    const tempFilePath = `/tmp/${uniqueId}.py`; // Temporary file path
+const languageConfigs = {
+    1: {
+        image: "cpp-image",
+        extension: "cpp",
+        command: "g++ /app/code.cpp -o /app/code && /app/code < /app/input.txt",
+    },
+    2: {
+        image: "python-image",
+        extension: "py",
+        command: "python /app/code.py < /app/input.txt",
+    },
+    3: {
+        image: "node-image",
+        extension: "js",
+        command: "node /app/code.js < /app/input.txt",
+    },
+    4: {
+        image: "python-image",
+        extension: "py",
+        command: "python /app/code.py < /app/input.txt",
+    }, // Pandas
+    5: {
+        image: "bash-image",
+        extension: "sh",
+        command: "bash /app/code.sh < /app/input.txt",
+    },
+    6: {
+        image: "python-image",
+        extension: "py",
+        command: "python /app/code.py < /app/input.txt",
+    }, // PyTorch
+    7: {
+        image: "go-image",
+        extension: "go",
+        command:
+            "go build -o /app/code /app/code.go && /app/code < /app/input.txt",
+    },
+};
 
-    try {
-        await writeFile(tempFilePath, code);
-        const dockerCommand = `docker run --rm -v ${tempFilePath}:/app/code.py testing python /app/code.py`;
-        const { stdout, stderr } = await execPromise(dockerCommand);
+export const executeCode = async (code, language_id, test_cases) => {
+    if (!code || !test_cases || !Array.isArray(test_cases)) {
+        throw new Error("Invalid input: code and test_cases are required.");
+    }
 
-        return { stdout, stderr };
-    } finally {
+    const config = languageConfigs[language_id];
+    if (!config) {
+        throw new Error(`Unsupported language_id: ${language_id}`);
+    }
+
+    const results = [];
+
+    for (const tc of test_cases) {
+        const uniqueId = randomUUID();
+        const tempCodePath = `/tmp/${uniqueId}_code.${config.extension}`;
+        const tempInputPath = `/tmp/${uniqueId}_input.txt`;
+
         try {
-            await unlink(tempFilePath);
-        } catch (cleanupError) {
-            console.error("Failed to delete temp file:", cleanupError);
+            await writeFile(tempCodePath, code);
+            await writeFile(tempInputPath, tc.input);
+
+            // Run Docker container with input redirected from file
+            const dockerCommand = `docker run --rm -v ${tempCodePath}:/app/code.${config.extension} -v ${tempInputPath}:/app/input.txt ${config.image} bash -c "${config.command}"`;
+            const { stdout, stderr } = await execPromise(dockerCommand);
+            let passed;
+
+            if (stdout.trim() == tc.expected.trim()) {
+                passed = true;
+            } else {
+                passed = false;
+            }
+            results.push({
+                input: tc.input,
+                expected: tc.expected,
+                output: stdout,
+                stderr: stderr,
+                passed: passed,
+            });
+        } catch (error) {
+            results.push({
+                input: tc.input,
+                expected: tc.expected,
+                error: error.message,
+            });
+        } finally {
+            try {
+                await Promise.all([
+                    unlink(tempCodePath),
+                    unlink(tempInputPath),
+                ]);
+            } catch (cleanupError) {
+                console.error("Failed to delete temp files:", cleanupError);
+            }
         }
     }
+    //console.log(results);
+    return results;
 };
